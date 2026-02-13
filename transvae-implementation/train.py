@@ -15,6 +15,8 @@ import yaml
 from pathlib import Path
 from torchvision import transforms
 from datasets import load_dataset
+from PIL import Image
+
 
 from transvae import TransVAE, TransVAELoss
 
@@ -185,7 +187,13 @@ def create_dataloader(args, rank, world_size):
 
             # Apply transform
             def transform_fn(example):
-                example["image"] = [transform(img) for img in example["image"]]
+                # example["image"] is a list of paths
+                imgs = []
+                for img_path in example["image"]:
+                    img = Image.open(img_path).convert("RGB")  # open image
+                    img = transform(img)  # apply your transforms
+                    imgs.append(img)
+                example["image"] = torch.stack(imgs)  # make a tensor
                 return example
 
             ds = ds.with_transform(transform_fn)
