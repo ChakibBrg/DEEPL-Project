@@ -185,7 +185,7 @@ def create_dataloader(args, rank, world_size):
 
             # Apply transform
             def transform_fn(example):
-                example["image"] = transform(example["image"])
+                example["image"] = [transform(img) for img in example["image"]]
                 return example
 
             ds = ds.with_transform(transform_fn)
