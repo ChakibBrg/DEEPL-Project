@@ -29,6 +29,7 @@ def parse_args():
     parser.add_argument('--variant', type=str, default='large', choices=['tiny', 'base', 'large', 'huge', 'giant'])
     parser.add_argument('--compression_ratio', type=int, default=16, choices=[8, 16])
     parser.add_argument('--latent_dim', type=int, default=32)
+    parser.add_argument('--device', type=str, default='cuda')
     
     # Data arguments
     parser.add_argument('--data_dir', type=str, required=False, help='Path to dataset')
