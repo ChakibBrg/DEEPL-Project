@@ -29,7 +29,7 @@ def parse_args():
     parser.add_argument('--latent_dim', type=int, default=32)
     
     # Data arguments
-    parser.add_argument('--data_dir', type=str, required=True, help='Path to dataset')
+    parser.add_argument('--data_dir', type=str, required=False, help='Path to dataset')
     parser.add_argument('--dataset', type=str, default='imagenet', choices=['imagenet', 'coco'])
     parser.add_argument('--resolution', type=int, default=256, help='Training resolution')
     parser.add_argument('--batch_size', type=int, default=256)
