@@ -35,7 +35,7 @@ def parse_args():
     parser.add_argument('--data_dir', type=str, required=False, help='Path to dataset')
     parser.add_argument('--dataset', type=str, default='imagenet', choices=['imagenet', 'coco'])
     parser.add_argument('--resolution', type=int, default=256, help='Training resolution')
-    parser.add_argument('--batch_size', type=int, default=128)
+    parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--num_workers', type=int, default=8)
     
     # Training arguments
