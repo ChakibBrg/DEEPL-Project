@@ -123,6 +123,7 @@ class TransVAE(nn.Module):
         
         key = f"{variant}_f{f}d{d}"
         if key in configs:
+            print(key)
             return configs[key]
         else:
             raise ValueError(f"Unknown variant: {variant} with f{f}d{d}")
