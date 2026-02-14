@@ -437,8 +437,8 @@ def main():
         if rank == 0:
             print(f"Epoch {epoch}: avg_loss={avg_loss:.6f} | GPU mem={torch.cuda.memory_allocated() / 1e9:.2f} GB")
 
-            if ((epoch + 1) % args.save_every_epochs == 0) or ((epoch + 1) == args.num_epochs):
-                save_checkpoint(model, optimizer, scheduler, epoch, global_step,
+            # if ((epoch + 1) % args.save_every_epochs == 0) or ((epoch + 1) == args.num_epochs):
+            save_checkpoint(model, optimizer, scheduler, epoch, global_step,
                                 osp.join(args.output_dir, f"checkpoint_epoch{epoch}.pth"), args)
 
         gc.collect()
