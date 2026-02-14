@@ -26,6 +26,7 @@ class TransVAE(nn.Module):
     
     def __init__(
         self,
+        config,
         variant: str = 'large',
         compression_ratio: int = 16,
         latent_dim: int = 32,
@@ -42,17 +43,29 @@ class TransVAE(nn.Module):
         self.latent_dim = latent_dim
         
         # Model configuration based on variant
-        config = self._get_variant_config(variant, compression_ratio, latent_dim)
+        # config = self._get_variant_config(variant, compression_ratio, latent_dim)
         
         # Encoder
+        # self.encoder = TransVAEEncoder(
+        #     input_channels=input_channels,
+        #     latent_dim=latent_dim,
+        #     depths=config['depths'],
+        #     base_dims=config['base_dims'],
+        #     compression_ratio=compression_ratio,
+        #     mlp_ratio=config['mlp_ratio'],
+        #     head_dim=config['head_dim'],
+        #     use_rope=use_rope,
+        #     use_conv_ffn=use_conv_ffn,
+        #     use_dc_path=use_dc_path,
+        # )
         self.encoder = TransVAEEncoder(
             input_channels=input_channels,
             latent_dim=latent_dim,
-            depths=config['depths'],
-            base_dims=config['base_dims'],
+            depths=config.get('depths'),
+            base_dims=config.get('base_dims'),
             compression_ratio=compression_ratio,
-            mlp_ratio=config['mlp_ratio'],
-            head_dim=config['head_dim'],
+            mlp_ratio=config.get('mlp_ratio', 1.0),
+            head_dim=config.get('head_dim', 64),
             use_rope=use_rope,
             use_conv_ffn=use_conv_ffn,
             use_dc_path=use_dc_path,
@@ -64,14 +77,26 @@ class TransVAE(nn.Module):
         self.conv_logvar = nn.Conv2d(final_dim, latent_dim, 3, padding=1)
         
         # Decoder (symmetric to encoder)
+        # self.decoder = TransVAEDecoder(
+        #     latent_dim=latent_dim,
+        #     output_channels=input_channels,
+        #     depths=config['depths'][::-1],
+        #     base_dims=config['base_dims'][::-1],
+        #     compression_ratio=compression_ratio,
+        #     mlp_ratio=config['mlp_ratio'],
+        #     head_dim=config['head_dim'],
+        #     use_rope=use_rope,
+        #     use_conv_ffn=use_conv_ffn,
+        #     use_dc_path=use_dc_path,
+        # )
         self.decoder = TransVAEDecoder(
             latent_dim=latent_dim,
             output_channels=input_channels,
-            depths=config['depths'][::-1],
-            base_dims=config['base_dims'][::-1],
+            depths=config.get('depths')[::-1],
+            base_dims=config.get('base_dims')[::-1],
             compression_ratio=compression_ratio,
-            mlp_ratio=config['mlp_ratio'],
-            head_dim=config['head_dim'],
+            mlp_ratio=config.get('mlp_ratio', 1.0),
+            head_dim=config.get('head_dim', 64),
             use_rope=use_rope,
             use_conv_ffn=use_conv_ffn,
             use_dc_path=use_dc_path,
@@ -123,7 +148,6 @@ class TransVAE(nn.Module):
         
         key = f"{variant}_f{f}d{d}"
         if key in configs:
-            print(key)
             return configs[key]
         else:
             raise ValueError(f"Unknown variant: {variant} with f{f}d{d}")

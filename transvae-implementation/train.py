@@ -100,10 +100,20 @@ def create_model(args, config):
     """Create TransVAE model"""
     model_config = config.get('model', {})
     
+    # model = TransVAE(
+    #     variant=args.variant,
+    #     compression_ratio=args.compression_ratio,
+    #     latent_dim=args.latent_dim,
+    #     use_rope=model_config.get('use_rope', True),
+    #     use_conv_ffn=model_config.get('use_conv_ffn', True),
+    #     use_dc_path=model_config.get('use_dc_path', True),
+    # )
+
     model = TransVAE(
-        variant=args.variant,
-        compression_ratio=args.compression_ratio,
-        latent_dim=args.latent_dim,
+        config=model_config,
+        variant=model_config.get("variant", args.variant),
+        compression_ratio=model_config.get("compression_ratio", args.compression_ratio),
+        latent_dim=model_config.get("latent_dim", args.latent_dim),
         use_rope=model_config.get('use_rope', True),
         use_conv_ffn=model_config.get('use_conv_ffn', True),
         use_dc_path=model_config.get('use_dc_path', True),
