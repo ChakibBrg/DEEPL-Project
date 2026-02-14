@@ -426,9 +426,6 @@ def create_dataloader(args, rank, world_size):
                             image = image.convert("RGB")
                         image = self.transform(image)
                         yield image, sample["label"]
-
-                def __len__(self):
-                    return len(self.dataset)
             
             train_dataset = TransformDataset(ds, transform)
         else:
@@ -464,6 +461,99 @@ def create_dataloader(args, rank, world_size):
     return dataloader, sampler
 
 
+# def train_epoch(
+#     model, 
+#     dataloader, 
+#     optimizer, 
+#     loss_fn, 
+#     scaler,
+#     epoch, 
+#     args,
+#     rank,
+#     writer=None,
+# ):
+#     """Train for one epoch with proper memory management"""
+#     model.train()
+    
+#     pbar = tqdm(dataloader, desc=f'Epoch {epoch}', disable=(rank != 0))
+    
+#     total_loss = 0
+#     step = 0
+    
+#     # FIX 2: Add gradient accumulation
+#     accumulation_steps = getattr(args, 'accumulation_steps', 1)
+    
+#     for batch_idx, batch in enumerate(pbar):
+        
+#         if isinstance(batch, dict):
+#             images = batch["image"]
+#         else:
+#             images, _ = batch
+        
+#         images = images.to(args.device, non_blocking=True)
+        
+#         # Forward pass
+#         if args.mixed_precision:
+#             with torch.cuda.amp.autocast():
+#                 reconstruction, mu, logvar = model(images)
+#                 losses = loss_fn(reconstruction, images, mu, logvar)
+#                 loss = losses['total'] / accumulation_steps  # Scale loss
+#         else:
+#             reconstruction, mu, logvar = model(images)
+#             losses = loss_fn(reconstruction, images, mu, logvar)
+#             loss = losses['total'] / accumulation_steps
+        
+#         # Backward pass
+#         if args.mixed_precision:
+#             scaler.scale(loss).backward()
+#         else:
+#             loss.backward()
+        
+#         # FIX 3: Clear intermediate tensors immediately
+#         del reconstruction, mu, logvar
+        
+#         # Optimizer step with accumulation
+#         if (batch_idx + 1) % accumulation_steps == 0:
+#             if args.mixed_precision:
+#                 scaler.unscale_(optimizer)
+#                 if args.grad_clip > 0:
+#                     torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+#                 scaler.step(optimizer)
+#                 scaler.update()
+#             else:
+#                 if args.grad_clip > 0:
+#                     torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+#                 optimizer.step()
+            
+#             optimizer.zero_grad(set_to_none=True)  # FIX 4: set_to_none=True saves memory
+        
+#         # Logging
+#         total_loss += loss.item() * accumulation_steps
+#         step += 1
+        
+#         # FIX 5: Detach losses before logging to prevent graph accumulation
+#         if rank == 0:
+#             pbar.set_postfix({
+#                 'loss': f'{loss.item() * accumulation_steps:.4f}',
+#                 'l1': f'{losses["l1"].item():.4f}',
+#                 'lpips': f'{losses["lpips"].item():.4f}',
+#             })
+            
+#             if writer is not None and batch_idx % 100 == 0:
+#                 global_step = epoch * len(dataloader) + batch_idx
+#                 for name, value in losses.items():
+#                     writer.add_scalar(f'train/{name}', value.detach().item(), global_step)
+        
+#         # FIX 6: Periodic memory cleanup
+#         if batch_idx % 50 == 0:
+#             torch.cuda.empty_cache()
+        
+#         # FIX 7: Delete loss dict to free computation graph
+#         del losses, loss
+    
+#     avg_loss = total_loss / step
+#     return avg_loss
+
 def train_epoch(
     model, 
     dataloader, 
@@ -474,6 +564,7 @@ def train_epoch(
     args,
     rank,
     writer=None,
+    global_step_offset=0,  # Add this parameter
 ):
     """Train for one epoch with proper memory management"""
     model.train()
@@ -483,7 +574,6 @@ def train_epoch(
     total_loss = 0
     step = 0
     
-    # FIX 2: Add gradient accumulation
     accumulation_steps = getattr(args, 'accumulation_steps', 1)
     
     for batch_idx, batch in enumerate(pbar):
@@ -500,7 +590,7 @@ def train_epoch(
             with torch.cuda.amp.autocast():
                 reconstruction, mu, logvar = model(images)
                 losses = loss_fn(reconstruction, images, mu, logvar)
-                loss = losses['total'] / accumulation_steps  # Scale loss
+                loss = losses['total'] / accumulation_steps
         else:
             reconstruction, mu, logvar = model(images)
             losses = loss_fn(reconstruction, images, mu, logvar)
@@ -512,7 +602,6 @@ def train_epoch(
         else:
             loss.backward()
         
-        # FIX 3: Clear intermediate tensors immediately
         del reconstruction, mu, logvar
         
         # Optimizer step with accumulation
@@ -528,13 +617,12 @@ def train_epoch(
                     torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
                 optimizer.step()
             
-            optimizer.zero_grad(set_to_none=True)  # FIX 4: set_to_none=True saves memory
+            optimizer.zero_grad(set_to_none=True)
         
         # Logging
         total_loss += loss.item() * accumulation_steps
         step += 1
         
-        # FIX 5: Detach losses before logging to prevent graph accumulation
         if rank == 0:
             pbar.set_postfix({
                 'loss': f'{loss.item() * accumulation_steps:.4f}',
@@ -542,25 +630,127 @@ def train_epoch(
                 'lpips': f'{losses["lpips"].item():.4f}',
             })
             
+            # FIX: Use global_step_offset instead of len(dataloader)
             if writer is not None and batch_idx % 100 == 0:
-                global_step = epoch * len(dataloader) + batch_idx
+                global_step = global_step_offset + batch_idx
                 for name, value in losses.items():
                     writer.add_scalar(f'train/{name}', value.detach().item(), global_step)
         
-        # FIX 6: Periodic memory cleanup
         if batch_idx % 50 == 0:
             torch.cuda.empty_cache()
         
-        # FIX 7: Delete loss dict to free computation graph
         del losses, loss
     
     avg_loss = total_loss / step
-    return avg_loss
+    # Return both avg_loss and the number of steps for global step tracking
+    return avg_loss, step
 
 
+def main():
+    gc.collect()
+    torch.cuda.empty_cache()
+    
+    args = parse_args()
+    
+    args.accumulation_steps = 4
+    args.hf_dataset = True
+    args.streaming = True
+    
+    rank, world_size, local_rank = setup_distributed()
+    config = load_config(args.config)
+    os.makedirs(args.output_dir, exist_ok=True)
+    
+    print(f"Creating TransVAE model...")
+    model = create_model(args, config)
+    model = model.cuda()
+    
+    if rank == 0:
+        num_params = model.get_num_params()
+        print(f"Model parameters: {num_params}")
+        print(f"Initial GPU memory: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+    
+    if world_size > 1:
+        model = DDP(model, device_ids=[local_rank], 
+                   find_unused_parameters=False)
+    
+    if args.freeze_encoder:
+        for param in model.encoder.parameters():
+            param.requires_grad = False
+        print("Encoder frozen for stage 2 training")
+    
+    optimizer = torch.optim.AdamW(
+        filter(lambda p: p.requires_grad, model.parameters()),
+        lr=args.learning_rate,
+        betas=(0.9, 0.95),
+        weight_decay=0.0,
+        fused=True if torch.cuda.is_available() else False,
+    )
+    
+    loss_fn = TransVAELoss(
+        l1_weight=args.l1_weight,
+        lpips_weight=args.lpips_weight,
+        kl_weight=args.kl_weight,
+        vf_weight=args.vf_weight,
+        gan_weight=args.gan_weight,
+        use_gan=args.use_gan,
+    ).cuda()
+    
+    scaler = torch.cuda.amp.GradScaler(enabled=args.mixed_precision)
+    
+    print("Creating dataloader...")
+    dataloader, sampler = create_dataloader(args, rank, world_size)
+    
+    writer = SummaryWriter(args.output_dir) if rank == 0 else None
+    
+    start_epoch = 0
+    global_step_offset = 0  # Track global steps across epochs
+    
+    if args.checkpoint:
+        print(f"Loading checkpoint from {args.checkpoint}")
+        checkpoint = torch.load(args.checkpoint, map_location='cuda', weights_only=True)
+        if isinstance(model, DDP):
+            model.module.load_state_dict(checkpoint['model_state_dict'])
+        else:
+            model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch = checkpoint['epoch'] + 1
+        global_step_offset = checkpoint.get('global_step', 0)  # Load if available
+        del checkpoint
+        torch.cuda.empty_cache()
+    
+    print(f"Starting training from epoch {start_epoch}...")
+    
+    for epoch in range(start_epoch, args.num_epochs):
+        if sampler is not None:
+            sampler.set_epoch(epoch)
+        
+        avg_loss, num_steps = train_epoch(
+            model, dataloader, optimizer, loss_fn, scaler,
+            epoch, args, rank, writer, global_step_offset
+        )
+        
+        # Update global step offset for next epoch
+        global_step_offset += num_steps
+        
+        if rank == 0:
+            print(f"Epoch {epoch}: Average loss = {avg_loss:.4f}")
+            print(f"GPU memory: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+            
+            if (epoch + 1) % 5 == 0 or (epoch + 1) == args.num_epochs:
+                save_path = os.path.join(args.output_dir, f'checkpoint_epoch{epoch}.pth')
+                # FIX: Save global_step in checkpoint
+                save_checkpoint(model, optimizer, epoch, global_step_offset, save_path, args)
+        
+        gc.collect()
+        torch.cuda.empty_cache()
+    
+    if rank == 0 and writer is not None:
+        writer.close()
+    
+    print("Training complete!")
 
 
-def save_checkpoint(model, optimizer, epoch, step, save_path, args):
+def save_checkpoint(model, optimizer, epoch, global_step, save_path, args):
     """Save model checkpoint"""
     if isinstance(model, DDP):
         model_state = model.module.state_dict()
@@ -569,7 +759,7 @@ def save_checkpoint(model, optimizer, epoch, step, save_path, args):
     
     checkpoint = {
         'epoch': epoch,
-        'step': step,
+        'global_step': global_step,  # Save global step
         'model_state_dict': model_state,
         'optimizer_state_dict': optimizer.state_dict(),
         'args': vars(args),
@@ -577,6 +767,25 @@ def save_checkpoint(model, optimizer, epoch, step, save_path, args):
     
     torch.save(checkpoint, save_path)
     print(f"Checkpoint saved to {save_path}")
+
+
+# def save_checkpoint(model, optimizer, epoch, step, save_path, args):
+#     """Save model checkpoint"""
+#     if isinstance(model, DDP):
+#         model_state = model.module.state_dict()
+#     else:
+#         model_state = model.state_dict()
+    
+#     checkpoint = {
+#         'epoch': epoch,
+#         'step': step,
+#         'model_state_dict': model_state,
+#         'optimizer_state_dict': optimizer.state_dict(),
+#         'args': vars(args),
+#     }
+    
+#     torch.save(checkpoint, save_path)
+#     print(f"Checkpoint saved to {save_path}")
 
 
 # def main():
@@ -680,104 +889,104 @@ def save_checkpoint(model, optimizer, epoch, step, save_path, args):
 #     print("Training complete!")
 
 
-def main():
-    gc.collect()
-    torch.cuda.empty_cache()
+# def main():
+#     gc.collect()
+#     torch.cuda.empty_cache()
     
-    args = parse_args()
+#     args = parse_args()
     
-    # FIX 8: Add these arguments
-    args.accumulation_steps = 4  # Effective batch size = batch_size * accumulation_steps
-    args.hf_dataset = True
-    args.streaming = True
+#     # FIX 8: Add these arguments
+#     args.accumulation_steps = 4  # Effective batch size = batch_size * accumulation_steps
+#     args.hf_dataset = True
+#     args.streaming = True
     
-    rank, world_size, local_rank = setup_distributed()
-    config = load_config(args.config)
-    os.makedirs(args.output_dir, exist_ok=True)
+#     rank, world_size, local_rank = setup_distributed()
+#     config = load_config(args.config)
+#     os.makedirs(args.output_dir, exist_ok=True)
     
-    print(f"Creating TransVAE model...")
-    model = create_model(args, config)
-    model = model.cuda()
+#     print(f"Creating TransVAE model...")
+#     model = create_model(args, config)
+#     model = model.cuda()
     
-    if rank == 0:
-        num_params = model.get_num_params()
-        print(f"Model parameters: {num_params}")
-        # FIX 9: Print initial memory
-        print(f"Initial GPU memory: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+#     if rank == 0:
+#         num_params = model.get_num_params()
+#         print(f"Model parameters: {num_params}")
+#         # FIX 9: Print initial memory
+#         print(f"Initial GPU memory: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
     
-    if world_size > 1:
-        model = DDP(model, device_ids=[local_rank], 
-                   find_unused_parameters=False)  # FIX 10: Set to False if all params used
+#     if world_size > 1:
+#         model = DDP(model, device_ids=[local_rank], 
+#                    find_unused_parameters=False)  # FIX 10: Set to False if all params used
     
-    if args.freeze_encoder:
-        for param in model.encoder.parameters():
-            param.requires_grad = False
-        print("Encoder frozen for stage 2 training")
+#     if args.freeze_encoder:
+#         for param in model.encoder.parameters():
+#             param.requires_grad = False
+#         print("Encoder frozen for stage 2 training")
     
-    # FIX 11: Use fused optimizer for better memory efficiency
-    optimizer = torch.optim.AdamW(
-        filter(lambda p: p.requires_grad, model.parameters()),
-        lr=args.learning_rate,
-        betas=(0.9, 0.95),
-        weight_decay=0.0,
-        fused=True if torch.cuda.is_available() else False,  # Faster, less memory
-    )
+#     # FIX 11: Use fused optimizer for better memory efficiency
+#     optimizer = torch.optim.AdamW(
+#         filter(lambda p: p.requires_grad, model.parameters()),
+#         lr=args.learning_rate,
+#         betas=(0.9, 0.95),
+#         weight_decay=0.0,
+#         fused=True if torch.cuda.is_available() else False,  # Faster, less memory
+#     )
     
-    loss_fn = TransVAELoss(
-        l1_weight=args.l1_weight,
-        lpips_weight=args.lpips_weight,
-        kl_weight=args.kl_weight,
-        vf_weight=args.vf_weight,
-        gan_weight=args.gan_weight,
-        use_gan=args.use_gan,
-    ).cuda()
+#     loss_fn = TransVAELoss(
+#         l1_weight=args.l1_weight,
+#         lpips_weight=args.lpips_weight,
+#         kl_weight=args.kl_weight,
+#         vf_weight=args.vf_weight,
+#         gan_weight=args.gan_weight,
+#         use_gan=args.use_gan,
+#     ).cuda()
     
-    scaler = torch.cuda.amp.GradScaler(enabled=args.mixed_precision)
+#     scaler = torch.cuda.amp.GradScaler(enabled=args.mixed_precision)
     
-    print("Creating dataloader...")
-    dataloader, sampler = create_dataloader(args, rank, world_size)
+#     print("Creating dataloader...")
+#     dataloader, sampler = create_dataloader(args, rank, world_size)
     
-    writer = SummaryWriter(args.output_dir) if rank == 0 else None
+#     writer = SummaryWriter(args.output_dir) if rank == 0 else None
     
-    start_epoch = 0
-    if args.checkpoint:
-        print(f"Loading checkpoint from {args.checkpoint}")
-        checkpoint = torch.load(args.checkpoint, map_location='cuda', weights_only=True)
-        if isinstance(model, DDP):
-            model.module.load_state_dict(checkpoint['model_state_dict'])
-        else:
-            model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        start_epoch = checkpoint['epoch'] + 1
-        del checkpoint  # FIX 12: Free checkpoint memory
-        torch.cuda.empty_cache()
+#     start_epoch = 0
+#     if args.checkpoint:
+#         print(f"Loading checkpoint from {args.checkpoint}")
+#         checkpoint = torch.load(args.checkpoint, map_location='cuda', weights_only=True)
+#         if isinstance(model, DDP):
+#             model.module.load_state_dict(checkpoint['model_state_dict'])
+#         else:
+#             model.load_state_dict(checkpoint['model_state_dict'])
+#         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+#         start_epoch = checkpoint['epoch'] + 1
+#         del checkpoint  # FIX 12: Free checkpoint memory
+#         torch.cuda.empty_cache()
     
-    print(f"Starting training from epoch {start_epoch}...")
+#     print(f"Starting training from epoch {start_epoch}...")
     
-    for epoch in range(start_epoch, args.num_epochs):
-        if sampler is not None:
-            sampler.set_epoch(epoch)
+#     for epoch in range(start_epoch, args.num_epochs):
+#         if sampler is not None:
+#             sampler.set_epoch(epoch)
         
-        avg_loss = train_epoch(
-            model, dataloader, optimizer, loss_fn, scaler,
-            epoch, args, rank, writer
-        )
+#         avg_loss = train_epoch(
+#             model, dataloader, optimizer, loss_fn, scaler,
+#             epoch, args, rank, writer
+#         )
         
-        if rank == 0:
-            print(f"Epoch {epoch}: Average loss = {avg_loss:.4f}")
-            print(f"GPU memory: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+#         if rank == 0:
+#             print(f"Epoch {epoch}: Average loss = {avg_loss:.4f}")
+#             print(f"GPU memory: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
             
-            if (epoch + 1) % 5 == 0 or (epoch + 1) == args.num_epochs:
-                save_path = os.path.join(args.output_dir, f'checkpoint_epoch{epoch}.pth')
-                save_checkpoint(model, optimizer, epoch, 0, save_path, args)
+#             if (epoch + 1) % 5 == 0 or (epoch + 1) == args.num_epochs:
+#                 save_path = os.path.join(args.output_dir, f'checkpoint_epoch{epoch}.pth')
+#                 save_checkpoint(model, optimizer, epoch, 0, save_path, args)
         
-        gc.collect()
-        torch.cuda.empty_cache()
+#         gc.collect()
+#         torch.cuda.empty_cache()
     
-    if rank == 0 and writer is not None:
-        writer.close()
+#     if rank == 0 and writer is not None:
+#         writer.close()
     
-    print("Training complete!")
+#     print("Training complete!")
 
 if __name__ == '__main__':
     main()
