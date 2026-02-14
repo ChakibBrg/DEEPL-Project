@@ -2,8 +2,8 @@
 
 model:
   variant: large
-  compression_ratio: 16     # f
-  latent_dim: 32      # d
+  compression_ratio: 8     # f
+  latent_dim: 16      # d
   
   # Architecture settings
   depths: [3, 3, 6, 8]
