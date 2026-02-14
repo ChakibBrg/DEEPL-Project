@@ -20,6 +20,7 @@ from PIL import Image
 
 from transvae import TransVAE, TransVAELoss
 
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train TransVAE')
@@ -200,32 +201,28 @@ def create_dataloader(args, rank, world_size):
             ds = load_dataset(
                 "evanarlian/imagenet_1k_resized_256",
                 split="train",
-                streaming=getattr(args, "streaming", False)
+                streaming=getattr(args, "streaming", False),
+                trust_remote_code=True
             )
 
-            # Apply transform
+            # --- Distributed Sharding for Streaming ---
+            # When streaming, every GPU gets the whole stream unless we skip/shard
+            if world_size > 1:
+                # ex: rank 0 takes 0, 2, 4... rank 1 takes 1, 3, 5...
+                ds = ds.shard(num_shards=world_size, index=rank)
+
             def transform_fn(examples):
-                # 'examples' is a dict of lists: {'image': [PIL.Image, ...], 'label': [int, ...]}
-                
                 pixel_values = []
                 for image in examples["image"]:
-                    # 1. Convert to RGB to avoid channel errors
                     if image.mode != "RGB":
                         image = image.convert("RGB")
-                    
-                    # 2. Apply transforms
-                    # We apply the list manually or use a Compose without the RGB check 
-                    # since we did it above.
                     trans = transforms.Compose(transform_list)
                     pixel_values.append(trans(image))
-                
-                # Return dictionary with transformed tensors
-                # Do NOT torch.stack() here; the DataLoader collate_fn handles stacking.
                 return {"image": pixel_values, "label": examples["label"]}
 
-            ds = ds.with_transform(transform_fn)
+            train_dataset = ds.with_transform(transform_fn)
 
-            train_dataset = ds
+            # train_dataset = ds
 
         else:
             # Use local ImageFolder
@@ -242,23 +239,32 @@ def create_dataloader(args, rank, world_size):
     # -----------------------
     # Distributed Sampler
     # -----------------------
-    if world_size > 1 and not getattr(args, "streaming", False):
-        sampler = DistributedSampler(
-            train_dataset,
-            num_replicas=world_size,
-            rank=rank,
-            shuffle=True,
-        )
+    # if world_size > 1 and not getattr(args, "streaming", False):
+    #     sampler = DistributedSampler(
+    #         train_dataset,
+    #         num_replicas=world_size,
+    #         rank=rank,
+    #         shuffle=True,
+    #     )
+    #     shuffle = False
+    # else:
+    #     sampler = None
+    #     shuffle = True
+    # Samplers (only for non-streaming)
+    is_streaming = True if getattr(args, "hf_dataset", True) else False
+    
+    if world_size > 1 and not is_streaming:
+        sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
         shuffle = False
     else:
         sampler = None
-        shuffle = True
+        shuffle = False if is_streaming else True
 
     # -----------------------
     # DataLoader
     # -----------------------
     # size = int(len(train_dataset) * 0.7)
-    size = 840000
+    # size = 840000
     dataloader = DataLoader(
         # train_dataset[:size],
         train_dataset,
