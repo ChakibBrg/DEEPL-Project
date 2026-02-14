@@ -6,8 +6,8 @@ model:
   latent_dim: 32      # d
   
   # Architecture settings
-  depths: [3, 3, 3]
-  base_dims: [128, 128, 256]
+  depths: [3, 3, 3, 3, 3]
+  base_dims: [128, 128, 256, 512, 1024]
   mlp_ratio: 1.0
   head_dim: 64
   
