@@ -299,15 +299,17 @@ def train_epoch(
         images, _ = batch
         images = images.to(args.device, non_blocking=True)
 
+        # Loss in FP32 with autocast disabled (LPIPS/KL stability)
+        amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+
+        
         # Forward in mixed precision (model only)
         if args.mixed_precision:
-            with torch.cuda.amp.autocast(dtype=torch.float16):
+            with torch.cuda.amp.autocast(dtype=amp_dtype):
+            # with torch.cuda.amp.autocast(dtype=torch.float16):
                 reconstruction, mu, logvar = model(images)
         else:
             reconstruction, mu, logvar = model(images)
-
-        # Loss in FP32 with autocast disabled (LPIPS/KL stability)
-        amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 
         with torch.cuda.amp.autocast(dtype=amp_dtype):
         # with torch.cuda.amp.autocast(enabled=False):
