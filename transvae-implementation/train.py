@@ -660,7 +660,7 @@ def main():
     config = load_config(args.config)
     os.makedirs(args.output_dir, exist_ok=True)
     
-    print(f"Creating TransVAE model...")
+    print(f"Creating TransVAE-{config.get('variant', args.variant)}-f{config.get('compression_ratio', args.compression_ratio)}d{config.get('latent_dim', args.latent_dim)} model...")
     model = create_model(args, config)
     model = model.cuda()
     
