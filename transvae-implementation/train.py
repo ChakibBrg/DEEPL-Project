@@ -201,28 +201,59 @@ def create_dataloader(args, rank, world_size):
             ds = load_dataset(
                 "evanarlian/imagenet_1k_resized_256",
                 split="train",
-                streaming=getattr(args, "streaming", False),
-                trust_remote_code=True
+                streaming=getattr(args, "streaming", False)
             )
 
-            # --- Distributed Sharding for Streaming ---
-            # When streaming, every GPU gets the whole stream unless we skip/shard
-            if world_size > 1:
-                # ex: rank 0 takes 0, 2, 4... rank 1 takes 1, 3, 5...
-                ds = ds.shard(num_shards=world_size, index=rank)
+            # # Apply transform
+            # def transform_fn(examples):
+            #     # 'examples' is a dict of lists: {'image': [PIL.Image, ...], 'label': [int, ...]}
+                
+            #     pixel_values = []
+            #     for image in examples["image"]:
+            #         # 1. Convert to RGB to avoid channel errors
+            #         if image.mode != "RGB":
+            #             image = image.convert("RGB")
+                    
+            #         # 2. Apply transforms
+            #         # We apply the list manually or use a Compose without the RGB check 
+            #         # since we did it above.
+            #         trans = transforms.Compose(transform_list)
+            #         pixel_values.append(trans(image))
+                
+            #     # Return dictionary with transformed tensors
+            #     # Do NOT torch.stack() here; the DataLoader collate_fn handles stacking.
+            #     return {"image": pixel_values, "label": examples["label"]}
 
+            # ds = ds.with_transform(transform_fn)
+
+            # train_dataset = ds
+
+            # --- 1. Distributed Sharding for Streaming ---
+            if world_size > 1:
+                ds = ds.shard(num_shards=world_size, index=rank)
+            
+            # --- 2. Shuffle for Streaming (CRITICAL) ---
+            # DataLoader shuffle=True doesn't work for streams. 
+            # We must shuffle the stream buffer.
+            ds = ds.shuffle(seed=42, buffer_size=10_000)
+
+            # --- 3. Transform Function ---
             def transform_fn(examples):
                 pixel_values = []
                 for image in examples["image"]:
                     if image.mode != "RGB":
                         image = image.convert("RGB")
+                    # Apply transforms
                     trans = transforms.Compose(transform_list)
                     pixel_values.append(trans(image))
                 return {"image": pixel_values, "label": examples["label"]}
 
-            train_dataset = ds.with_transform(transform_fn)
+            # --- 4. FIX: Use .map() instead of .with_transform() ---
+            # batched=True makes it efficient (processes batch_size items at once)
+            # but it still yields 1 item at a time to the DataLoader
+            ds = ds.map(transform_fn, batched=True, batch_size=args.batch_size)
 
-            # train_dataset = ds
+            train_dataset = ds
 
         else:
             # Use local ImageFolder
@@ -239,32 +270,23 @@ def create_dataloader(args, rank, world_size):
     # -----------------------
     # Distributed Sampler
     # -----------------------
-    # if world_size > 1 and not getattr(args, "streaming", False):
-    #     sampler = DistributedSampler(
-    #         train_dataset,
-    #         num_replicas=world_size,
-    #         rank=rank,
-    #         shuffle=True,
-    #     )
-    #     shuffle = False
-    # else:
-    #     sampler = None
-    #     shuffle = True
-    # Samplers (only for non-streaming)
-    is_streaming = True if getattr(args, "hf_dataset", True) else False
-    
-    if world_size > 1 and not is_streaming:
-        sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
+    if world_size > 1 and not getattr(args, "streaming", False):
+        sampler = DistributedSampler(
+            train_dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=True,
+        )
         shuffle = False
     else:
         sampler = None
-        shuffle = False if is_streaming else True
+        shuffle = True
 
     # -----------------------
     # DataLoader
     # -----------------------
     # size = int(len(train_dataset) * 0.7)
-    # size = 840000
+    size = 840000
     dataloader = DataLoader(
         # train_dataset[:size],
         train_dataset,
