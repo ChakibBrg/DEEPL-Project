@@ -40,6 +40,7 @@ def parse_args():
                    help="Path to a checkpoint (.pth) OR a directory containing checkpoints")
     p.add_argument("--output_json", type=str, default=None,
                    help="Optional path to save results JSON (for checkpoint sweep)")
+    p.add_argument("--config", type=str, required=True)
 
     # dataset
     p.add_argument("--data_dir", type=str, help="Path to dataset root")
