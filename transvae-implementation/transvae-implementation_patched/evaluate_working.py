@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import json
+import yaml
 
 import numpy as np
 import torch
@@ -262,6 +263,11 @@ def create_dataloader(args, rank=0, world_size=1):
 
     return dataloader, sampler
 
+def load_config(path: str):
+    with open(path, "r") as f:
+        return yaml.safe_load(f)
+
+
 
 def load_model_from_checkpoint(ckpt_path: Path, device: str):
     ckpt = torch.load(str(ckpt_path), map_location=device)
@@ -285,10 +291,17 @@ def load_model_from_checkpoint(ckpt_path: Path, device: str):
 
     # IMPORTANT: Your TransVAE constructor in training used (config=..., variant=..., etc.)
     # But many repos allow variant/compression_ratio/latent_dim only. We keep it compatible:
+    cfg = load_config(model_args.config)
+    model_cfg = cfg.get("model", {})
+
     model = TransVAE(
+        config=model_cfg,
         variant=model_args.get("variant", "base"),
         compression_ratio=model_args.get("compression_ratio", 16),
         latent_dim=model_args.get("latent_dim", 32),
+        use_rope=model_cfg.get("use_rope", True),
+        use_conv_ffn=model_cfg.get("use_conv_ffn", True),
+        use_dc_path=model_cfg.get("use_dc_path", True),
     ).to(device)
 
     # If keys are prefixed with "module." from DDP, strip them
