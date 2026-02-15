@@ -40,7 +40,8 @@ def parse_args():
                    help="Optional path to save results JSON (for checkpoint sweep)")
 
     # dataset
-    p.add_argument("--data_dir", type=str, required=True, help="Path to dataset root")
+    p.add_argument("--data_dir", type=str, help="Path to dataset root")
+    p.add_argument("--hf_dataset", action="store_true")
     p.add_argument("--dataset", type=str, default="imagenet", choices=["imagenet", "coco"])
     p.add_argument("--split", type=str, default="val", choices=["train", "val", "test"])
     p.add_argument("--resolution", type=int, default=256)
@@ -48,7 +49,7 @@ def parse_args():
     p.add_argument("--num_workers", type=int, default=8)
     p.add_argument("--num_samples", type=int, default=None,
                    help="Evaluate on a random subset of N samples (for quick checks)")
-    p.add_argument("--size", type=int, default=200000)
+    p.add_argument("--size", type=int, default=20000)
 
 
     # metrics
