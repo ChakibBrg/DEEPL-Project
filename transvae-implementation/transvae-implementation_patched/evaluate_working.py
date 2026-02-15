@@ -25,6 +25,7 @@ from skimage.metrics import peak_signal_noise_ratio as psnr_metric
 from skimage.metrics import structural_similarity as ssim_metric
 
 import lpips
+from torchmetrics.image.fid import FrechetInceptionDistance
 
 from transvae import TransVAE
 
@@ -51,9 +52,7 @@ def parse_args():
 
 
     # metrics
-    p.add_argument("--metrics", nargs="+", default=["psnr", "ssim", "lpips"],
-                   choices=["psnr", "ssim", "lpips"],
-                   help="Metrics to compute")
+    p.add_argument("--metrics", nargs="+", default=["psnr", "ssim", "lpips", "fid"], choices=["psnr", "ssim", "lpips", "fid"], help="Metrics to compute")
 
     # device/precision
     p.add_argument("--device", type=str, default="cuda")
@@ -294,6 +293,12 @@ def evaluate_one_checkpoint(model, dataloader, metrics, device="cuda", use_amp=F
         lpips_fn = lpips.LPIPS(net="vgg").to(device)
         lpips_fn.eval()
 
+    fid = None
+    if "fid" in metrics:
+        fid = FrechetInceptionDistance(feature=2048, normalize=True).to(device)
+        # normalize=True expects inputs in [0,1] float
+
+
     amp_dtype = torch.bfloat16 if (device.startswith("cuda") and torch.cuda.is_bf16_supported()) else torch.float16
 
     for images, _ in tqdm(dataloader, desc="Evaluating", leave=False):
@@ -343,6 +348,13 @@ def evaluate_one_checkpoint(model, dataloader, metrics, device="cuda", use_amp=F
                         ssim_metric(img_orig, img_recon, data_range=1.0, channel_axis=2)
                     )
 
+        if "fid" in metrics:
+            # FID expects 3-channel images. If your data is RGB, you're good.
+            # It also expects [0,1] floats if normalize=True.
+            fid.update(images, real=True)
+            fid.update(recon_img, real=False)
+
+
     results = {}
     for name, vals in metric_values.items():
         vals = np.asarray(vals, dtype=np.float64)
@@ -352,6 +364,9 @@ def evaluate_one_checkpoint(model, dataloader, metrics, device="cuda", use_amp=F
             "median": float(np.median(vals)) if len(vals) else float("nan"),
             "n": int(len(vals)),
         }
+    if "fid" in metrics:
+        fid_value = fid.compute().item()
+        results["fid"] = {"mean": fid_value, "std": 0.0, "median": fid_value, "n": len(dataloader.dataset)}
     return results
 
 
