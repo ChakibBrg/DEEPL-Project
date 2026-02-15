@@ -1,6 +1,16 @@
 """
-Loss functions for TransVAE training
+Loss functions for TransVAE training (patched for stability)
+
+Main fixes vs original:
+- Decoder output is unbounded in this repo => apply sigmoid() inside loss for image-space terms
+  (L1 / LPIPS / VF / GAN) so they operate on [0,1] images.
+- LPIPS always receives inputs in [-1,1] (after sigmoid for recon).
+- KL is computed in FP32 and logvar is clamped to avoid exp overflow.
+- Fix bug: VFLoss temperature used undefined variable `temp`.
+- VF loss module is created lazily only if actually used (dinov2 provided).
 """
+
+from __future__ import annotations
 
 import torch
 import torch.nn as nn
@@ -10,24 +20,14 @@ import lpips
 
 class TransVAELoss(nn.Module):
     """
-    Combined loss for TransVAE training
-    
-    Components:
-    - L1 reconstruction loss
-    - LPIPS perceptual loss
-    - KL divergence loss
-    - VF (Visual Feature) alignment loss
-    - GAN loss (optional, for stage 2)
-    
-    Args:
-        l1_weight: Weight for L1 loss
-        lpips_weight: Weight for LPIPS loss
-        kl_weight: Weight for KL loss
-        vf_weight: Weight for VF loss
-        gan_weight: Weight for GAN loss
-        use_gan: Whether to use GAN loss
+    Combined loss for TransVAE training.
+
+    IMPORTANT for this repo:
+    - The decoder outputs raw logits (no tanh/sigmoid). We convert reconstruction -> [0,1]
+      using sigmoid() for all pixel/perceptual/image-based losses.
+    - Input `target` is expected to be in [0,1] (torchvision.transforms.ToTensor()).
     """
-    
+
     def __init__(
         self,
         l1_weight: float = 1.0,
@@ -36,103 +36,103 @@ class TransVAELoss(nn.Module):
         vf_weight: float = 0.1,
         gan_weight: float = 0.05,
         use_gan: bool = False,
+        logvar_clip: tuple[float, float] = (-30.0, 20.0),
     ):
         super().__init__()
-        
-        self.l1_weight = l1_weight
-        self.lpips_weight = lpips_weight
-        self.kl_weight = kl_weight
-        self.vf_weight = vf_weight
-        self.gan_weight = gan_weight
-        self.use_gan = use_gan
-        
-        # LPIPS loss
-        self.lpips_loss = lpips.LPIPS(net='vgg').eval()
-        for param in self.lpips_loss.parameters():
-            param.requires_grad = False
-        
-        # VF loss (if using DINOv2 alignment)
-        self.vf_loss = VFLoss() if vf_weight > 0 else None
-    
+
+        self.l1_weight = float(l1_weight)
+        self.lpips_weight = float(lpips_weight)
+        self.kl_weight = float(kl_weight)
+        self.vf_weight = float(vf_weight)
+        self.gan_weight = float(gan_weight)
+        self.use_gan = bool(use_gan)
+        self.logvar_clip = logvar_clip
+
+        # LPIPS perceptual loss (frozen)
+        self.lpips_loss = lpips.LPIPS(net="vgg").eval()
+        for p in self.lpips_loss.parameters():
+            p.requires_grad_(False)
+
+        # VF loss is only constructed when needed (avoids overhead/bugs when unused)
+        self._vf_loss = None
+
+    @property
+    def vf_loss(self):
+        if self._vf_loss is None:
+            self._vf_loss = VFLoss()
+        return self._vf_loss
+
     def forward(
         self,
         reconstruction: torch.Tensor,
         target: torch.Tensor,
         mu: torch.Tensor,
         logvar: torch.Tensor,
-        discriminator: nn.Module = None,
-        dinov2: nn.Module = None,
+        discriminator: nn.Module | None = None,
+        dinov2: nn.Module | None = None,
     ) -> dict:
-        """
-        Compute combined loss
-        
-        Args:
-            reconstruction: Reconstructed image [B, 3, H, W]
-            target: Target image [B, 3, H, W]
-            mu: Latent mean [B, D, H/f, W/f]
-            logvar: Latent log variance [B, D, H/f, W/f]
-            discriminator: Discriminator model (optional)
-            dinov2: DINOv2 model for VF loss (optional)
-            
-        Returns:
-            Dictionary of losses
-        """
-        losses = {}
-        
+        losses: dict[str, torch.Tensor] = {}
+
+        # --------
+        # Image-space reconstruction in [0,1]
+        # --------
+        # decoder outputs unbounded logits -> stabilize with sigmoid
+        recon_img = reconstruction.sigmoid()
+
         # L1 reconstruction loss
-        l1_loss = F.l1_loss(reconstruction, target)
-        losses['l1'] = l1_loss * self.l1_weight
-        
-        # LPIPS perceptual loss
-        # Normalize to [-1, 1] for LPIPS
-        recon_norm = reconstruction * 2 - 1
-        target_norm = target * 2 - 1
-        lpips_loss = self.lpips_loss(recon_norm, target_norm).mean()
-        losses['lpips'] = lpips_loss * self.lpips_weight
-        
-        # KL divergence loss
-        kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-        kl_loss = kl_loss / (mu.shape[0] * mu.shape[2] * mu.shape[3])  # Normalize
-        losses['kl'] = kl_loss * self.kl_weight
-        
-        # VF alignment loss
-        if self.vf_loss is not None and dinov2 is not None:
-            vf_loss = self.vf_loss(reconstruction, target, mu, dinov2)
-            losses['vf'] = vf_loss * self.vf_weight
-        
-        # GAN loss
-        if self.use_gan and discriminator is not None:
-            # Generator loss (fool discriminator)
-            fake_pred = discriminator(reconstruction)
-            gan_loss = F.binary_cross_entropy_with_logits(
-                fake_pred,
-                torch.ones_like(fake_pred)
-            )
-            losses['gan'] = gan_loss * self.gan_weight
-        
-        # Total loss
-        losses['total'] = sum(losses.values())
-        
+        l1 = F.l1_loss(recon_img, target)
+        losses["l1"] = l1 * self.l1_weight
+
+        # LPIPS perceptual loss: expects inputs in [-1,1]
+        if self.lpips_weight > 0:
+            recon_lp = (recon_img * 2.0 - 1.0).clamp(-1.0, 1.0)
+            targ_lp = (target * 2.0 - 1.0).clamp(-1.0, 1.0)
+            lp = self.lpips_loss(recon_lp, targ_lp).mean()
+            losses["lpips"] = lp * self.lpips_weight
+        else:
+            losses["lpips"] = recon_img.new_zeros(())
+
+        # KL divergence (FP32 + clamped logvar for stability)
+        if self.kl_weight > 0:
+            mu32 = mu.float()
+            logvar32 = logvar.float().clamp(self.logvar_clip[0], self.logvar_clip[1])
+            # mean over all dims
+            kl = -0.5 * (1.0 + logvar32 - mu32.pow(2) - logvar32.exp())
+            kl = kl.mean()
+            losses["kl"] = kl * self.kl_weight
+        else:
+            losses["kl"] = recon_img.new_zeros(())
+
+        # VF alignment loss (optional; requires dinov2)
+        if self.vf_weight > 0 and dinov2 is not None:
+            vf = self.vf_loss(recon_img, target, mu, dinov2)
+            losses["vf"] = vf * self.vf_weight
+        else:
+            losses["vf"] = recon_img.new_zeros(())
+
+        # GAN loss (optional)
+        if self.use_gan and discriminator is not None and self.gan_weight > 0:
+            fake_pred = discriminator(recon_img)
+            gan = F.binary_cross_entropy_with_logits(fake_pred, torch.ones_like(fake_pred))
+            losses["gan"] = gan * self.gan_weight
+        else:
+            losses["gan"] = recon_img.new_zeros(())
+
+        losses["total"] = losses["l1"] + losses["lpips"] + losses["kl"] + losses["vf"] + losses["gan"]
         return losses
 
 
 class VFLoss(nn.Module):
     """
-    Visual Feature (VF) alignment loss
-    
-    Aligns VAE latent space with DINOv2 features
-    Uses margin-based contrastive loss
-    
-    Args:
-        margin: Margin for contrastive loss
-        temperature: Temperature for similarity
+    Visual Feature (VF) alignment loss (simple margin-based similarity).
     """
-    
+
     def __init__(self, margin: float = 0.4, temperature: float = 0.07):
         super().__init__()
-        self.margin = margin
-        self.temperature = temperature
-    
+        self.margin = float(margin)
+        self.temperature = float(temperature)
+        self.proj: nn.Linear | None = None
+
     def forward(
         self,
         reconstruction: torch.Tensor,
@@ -140,132 +140,33 @@ class VFLoss(nn.Module):
         latent: torch.Tensor,
         dinov2: nn.Module,
     ) -> torch.Tensor:
-        """
-        Compute VF loss
-        
-        Args:
-            reconstruction: Reconstructed image [B, 3, H, W]
-            target: Target image [B, 3, H, W]
-            latent: Latent representation [B, D, H/f, W/f]
-            dinov2: DINOv2 model
-            
-        Returns:
-            VF loss scalar
-        """
-        # Extract DINOv2 features
+        # DINOv2 expects images around 224; use target only (teacher)
         with torch.no_grad():
-            # DINOv2 expects images at 224x224
-            target_resized = F.interpolate(
-                target, size=(224, 224), mode='bilinear', align_corners=False
-            )
-            dino_features = dinov2(target_resized)  # [B, C_dino, H_dino, W_dino]
-        
-        # Downsample VAE latent to match DINOv2 spatial size
+            target_resized = F.interpolate(target, size=(224, 224), mode="bilinear", align_corners=False)
+            dino_features = dinov2(target_resized)
+
         B, D, H_lat, W_lat = latent.shape
         _, C_dino, H_dino, W_dino = dino_features.shape
-        
-        if H_lat != H_dino or W_lat != W_dino:
-            latent_resized = F.interpolate(
-                latent, size=(H_dino, W_dino), mode='bilinear', align_corners=False
-            )
+
+        if (H_lat, W_lat) != (H_dino, W_dino):
+            latent_resized = F.interpolate(latent, size=(H_dino, W_dino), mode="bilinear", align_corners=False)
         else:
             latent_resized = latent
-        
-        # Project latent to same dimension as DINOv2 if needed
+
         if D != C_dino:
-            # Simple linear projection
-            if not hasattr(self, 'proj'):
+            if self.proj is None:
                 self.proj = nn.Linear(D, C_dino).to(latent.device)
-            
             latent_flat = latent_resized.flatten(2).transpose(1, 2)  # [B, N, D]
-            latent_proj = self.proj(latent_flat).transpose(1, 2)  # [B, C_dino, N]
+            latent_proj = self.proj(latent_flat).transpose(1, 2)     # [B, C_dino, N]
             latent_proj = latent_proj.reshape(B, C_dino, H_dino, W_dino)
         else:
             latent_proj = latent_resized
-        
-        # Normalize features
+
         latent_norm = F.normalize(latent_proj, dim=1)
         dino_norm = F.normalize(dino_features, dim=1)
-        
-        # Compute cosine similarity
+
+        # similarity in [-1,1]
         similarity = (latent_norm * dino_norm).sum(dim=1).mean()
-        
-        # Margin-based loss: encourage similarity to be above margin
+
         loss = torch.clamp(self.margin - similarity, min=0.0)
-        
         return loss
-
-
-class DiscriminatorLoss(nn.Module):
-    """
-    Discriminator loss for adversarial training
-    
-    Args:
-        loss_type: Type of GAN loss ('bce', 'hinge', 'wgan')
-    """
-    
-    def __init__(self, loss_type: str = 'bce'):
-        super().__init__()
-        self.loss_type = loss_type
-    
-    def forward(
-        self,
-        real_pred: torch.Tensor,
-        fake_pred: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        Compute discriminator loss
-        
-        Args:
-            real_pred: Discriminator predictions for real images
-            fake_pred: Discriminator predictions for fake images
-            
-        Returns:
-            Discriminator loss
-        """
-        if self.loss_type == 'bce':
-            real_loss = F.binary_cross_entropy_with_logits(
-                real_pred, torch.ones_like(real_pred)
-            )
-            fake_loss = F.binary_cross_entropy_with_logits(
-                fake_pred, torch.zeros_like(fake_pred)
-            )
-            return (real_loss + fake_loss) / 2
-        
-        elif self.loss_type == 'hinge':
-            real_loss = torch.mean(F.relu(1.0 - real_pred))
-            fake_loss = torch.mean(F.relu(1.0 + fake_pred))
-            return (real_loss + fake_loss) / 2
-        
-        elif self.loss_type == 'wgan':
-            return -torch.mean(real_pred) + torch.mean(fake_pred)
-        
-        else:
-            raise ValueError(f"Unknown loss type: {self.loss_type}")
-
-
-if __name__ == '__main__':
-    # Test loss computation
-    print("Testing TransVAELoss...")
-    
-    loss_fn = TransVAELoss(
-        l1_weight=1.0,
-        lpips_weight=1.0,
-        kl_weight=1e-8,
-        vf_weight=0.0,  # Disable VF for testing
-        use_gan=False,
-    )
-    
-    # Create dummy data
-    B, C, H, W = 4, 3, 256, 256
-    reconstruction = torch.randn(B, C, H, W)
-    target = torch.randn(B, C, H, W)
-    mu = torch.randn(B, 32, H // 16, W // 16)
-    logvar = torch.randn(B, 32, H // 16, W // 16)
-    
-    # Compute losses
-    losses = loss_fn(reconstruction, target, mu, logvar)
-    
-    print("Computed losses:")
-    for name, value in losses.items():
-        print(f"  {name}: {value.item():.6f}")

@@ -183,20 +183,33 @@ class TransVAE(nn.Module):
         logvar = self.conv_logvar(h)
         return mu, logvar
     
-    def reparameterize(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
-        """
-        Reparameterization trick
-        
-        Args:
-            mu: Mean [B, D, H, W]
-            logvar: Log variance [B, D, H, W]
-            
-        Returns:
-            z: Sampled latent [B, D, H, W]
-        """
-        std = torch.exp(0.5 * logvar)
+    def reparameterize(self, mu, logvar):
+        # IMPORTANT: do this in FP32 for stability
+        mu_f = mu.float()
+        logvar_f = logvar.float().clamp(-30.0, 20.0)   # critical clamp
+
+        std = torch.exp(0.5 * logvar_f)
         eps = torch.randn_like(std)
-        return mu + eps * std
+        z = mu_f + eps * std
+
+        # cast back to original dtype for decoder
+        return z.to(mu.dtype)
+
+    
+    # def reparameterize(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
+    #     """
+    #     Reparameterization trick
+        
+    #     Args:
+    #         mu: Mean [B, D, H, W]
+    #         logvar: Log variance [B, D, H, W]
+            
+    #     Returns:
+    #         z: Sampled latent [B, D, H, W]
+    #     """
+    #     std = torch.exp(0.5 * logvar)
+    #     eps = torch.randn_like(std)
+    #     return mu + eps * std
     
     def decode(self, z: torch.Tensor) -> torch.Tensor:
         """
@@ -228,6 +241,9 @@ class TransVAE(nn.Module):
             logvar: Latent log variance [B, D, H/f, W/f]
         """
         mu, logvar = self.encode(x)
+        mu = mu.clamp(-50, 50)
+        logvar = logvar.clamp(-30, 20)
+
         z = self.reparameterize(mu, logvar)
         reconstruction = self.decode(z)
         
