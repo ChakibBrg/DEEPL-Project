@@ -395,7 +395,7 @@ def main():
     ckpts = list_checkpoints(args.checkpoint)
 
     print("Creating dataloader...")
-    dataloader = create_dataloader(args)
+    dataloader, _ = create_dataloader(args)
     ds_size = len(dataloader.dataset) if hasattr(dataloader.dataset, "__len__") else None
     print(f"Dataset: {args.dataset} split={args.split}  resolution={args.resolution}  size={ds_size}")
 
