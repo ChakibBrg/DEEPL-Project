@@ -16,6 +16,7 @@ import json
 
 import numpy as np
 import torch
+import torch.distributed as dist
 from torch.utils.data import DataLoader, DistributedSampler
 from torchvision import datasets, transforms
 from tqdm import tqdm
@@ -59,6 +60,9 @@ def parse_args():
     p.add_argument("--device", type=str, default="cuda")
     p.add_argument("--use_amp", action="store_true",
                    help="Use autocast during model forward (not needed usually for eval)")
+    
+    # distributed
+    p.add_argument("--local_rank", type=int, default=0)
 
     return p.parse_args()
 
@@ -79,6 +83,19 @@ def list_checkpoints(path: str):
         return ckpts
     raise FileNotFoundError(f"Checkpoint path not found: {p}")
 
+def setup_distributed():
+    if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+        rank = int(os.environ["RANK"])
+        world_size = int(os.environ["WORLD_SIZE"])
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    else:
+        rank, world_size, local_rank = 0, 1, 0
+
+    if world_size > 1:
+        dist.init_process_group(backend="nccl")
+        torch.cuda.set_device(local_rank)
+
+    return rank, world_size, local_rank
 
 # def create_dataloader(args):
 #     if args.dataset != "imagenet":
@@ -111,7 +128,7 @@ def list_checkpoints(path: str):
 #     return loader
 
 
-def create_dataloader(args, rank, world_size):
+def create_dataloader(args, rank=0, world_size=1):
     """Create dataloader with optional streaming support"""
 
     # -----------------------
