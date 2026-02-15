@@ -292,8 +292,8 @@ def load_model_from_checkpoint(ckpt_path: Path, device: str):
 
     # IMPORTANT: Your TransVAE constructor in training used (config=..., variant=..., etc.)
     # But many repos allow variant/compression_ratio/latent_dim only. We keep it compatible:
-    print("model args: ", model_args)
-    cfg = load_config(model_args.config)
+    # print("model args: ", model_args)
+    cfg = load_config(model_args['config'])
     model_cfg = cfg.get("model", {})
 
     model = TransVAE(
