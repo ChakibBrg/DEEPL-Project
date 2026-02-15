@@ -183,7 +183,7 @@ def create_dataloader(args, rank=0, world_size=1):
 
             ds = ds.with_transform(transform_fn)
 
-            train_dataset = ds.take(getattr(args, "size", 200000))
+            train_dataset = ds.take(getattr(args, "size", 20000))
 
             # # --- 1. Distributed Sharding for Streaming ---
             # if world_size > 1:
@@ -336,7 +336,7 @@ def evaluate_one_checkpoint(model, dataloader, metrics, device="cuda", use_amp=F
     pbar = tqdm(dataloader, desc="Evaluating")
 
     for batch_idx, batch in enumerate(pbar):
-        print(batch)
+        # print(batch)
         if isinstance(batch, dict):
             images = batch["image"]
         else:
