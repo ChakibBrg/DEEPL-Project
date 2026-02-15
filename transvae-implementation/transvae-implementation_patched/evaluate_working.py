@@ -298,9 +298,9 @@ def load_model_from_checkpoint(ckpt_path: Path, device: str):
 
     model = TransVAE(
         config=model_cfg,
-        variant=model_args.get("variant", "base"),
-        compression_ratio=model_args.get("compression_ratio", 16),
-        latent_dim=model_args.get("latent_dim", 32),
+        variant=model_cfg.get("variant", "base"),
+        compression_ratio=model_cfg.get("compression_ratio", 16),
+        latent_dim=model_cfg.get("latent_dim", 32),
         use_rope=model_cfg.get("use_rope", True),
         use_conv_ffn=model_cfg.get("use_conv_ffn", True),
         use_dc_path=model_cfg.get("use_dc_path", True),
