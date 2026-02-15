@@ -333,8 +333,9 @@ def evaluate_one_checkpoint(model, dataloader, metrics, device="cuda", use_amp=F
 
 
     amp_dtype = torch.bfloat16 if (device.startswith("cuda") and torch.cuda.is_bf16_supported()) else torch.float16
+    pbar = tqdm(dataloader, desc="Evaluating")
 
-    for batch_idx, batch in tqdm(dataloader, desc="Evaluating", leave=False):
+    for batch_idx, batch in enumerate(pbar):
         print(batch)
         if isinstance(batch, dict):
             images = batch["image"]
