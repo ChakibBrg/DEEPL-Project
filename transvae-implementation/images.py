@@ -122,7 +122,6 @@ def load_model(checkpoint_path: str, config_path: str, device: str):
 
     ckpt = torch.load(checkpoint_path, map_location=device)
 
-    # Accept different checkpoint formats
     state = ckpt.get("model_state_dict", ckpt.get("state_dict", ckpt))
     state = {k.replace("module.", ""): v for k, v in state.items()}
 
@@ -144,7 +143,6 @@ def main():
     print("Loading data...")
     loader = create_dataloader(args)
 
-    # grab one batch (5 images)
     batch = next(iter(loader))
     images = batch["image"] if isinstance(batch, dict) else batch[0]
     images = images.to(device)

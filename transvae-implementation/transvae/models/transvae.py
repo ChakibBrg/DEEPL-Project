@@ -58,6 +58,7 @@ class TransVAE(nn.Module):
         #     use_conv_ffn=use_conv_ffn,
         #     use_dc_path=use_dc_path,
         # )
+        # NOTE: using directly the yaml config
         self.encoder = TransVAEEncoder(
             input_channels=input_channels,
             latent_dim=latent_dim,

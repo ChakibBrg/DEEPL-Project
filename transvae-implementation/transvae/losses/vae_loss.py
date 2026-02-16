@@ -1,15 +1,3 @@
-"""
-Loss functions for TransVAE training (patched for stability)
-
-Main fixes vs original:
-- Decoder output is unbounded in this repo => apply sigmoid() inside loss for image-space terms
-  (L1 / LPIPS / VF / GAN) so they operate on [0,1] images.
-- LPIPS always receives inputs in [-1,1] (after sigmoid for recon).
-- KL is computed in FP32 and logvar is clamped to avoid exp overflow.
-- Fix bug: VFLoss temperature used undefined variable `temp`.
-- VF loss module is created lazily only if actually used (dinov2 provided).
-"""
-
 from __future__ import annotations
 
 import torch

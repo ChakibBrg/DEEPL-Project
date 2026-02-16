@@ -1,11 +1,6 @@
 """
 Evaluation script for TransVAE (validation set + checkpoint sweep)
 
-Key fixes vs original:
-- Supports --checkpoint being a single file OR a directory containing many .pth
-- Reconstruction from this repo is logits -> apply sigmoid() before metrics
-- LPIPS expects inputs in [-1, 1] with images in [0, 1] -> do correct conversion
-- Robust checkpoint loading for different saved formats
 """
 
 import argparse
@@ -140,12 +135,9 @@ def create_dataloader(args, rank=0, world_size=1):
         transforms.Resize(args.resolution),
         transforms.CenterCrop(args.resolution),
         transforms.ToTensor(),
-        # Add Normalization here if needed, e.g.:
         # transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ]
-    
-    # We create a specific transform for local files that handles RGB conversion
-    # inside the Compose (ImageFolder usually loads RGB, but to be safe):
+
     local_transform = transforms.Compose(transform_list)
 
     # -----------------------
@@ -154,7 +146,6 @@ def create_dataloader(args, rank=0, world_size=1):
     if args.dataset == "imagenet":
 
         if getattr(args, "hf_dataset", True):
-            # Use HuggingFace dataset
             ds = load_dataset(
                 "evanarlian/imagenet_1k_resized_256",
                 split="val",
@@ -163,22 +154,16 @@ def create_dataloader(args, rank=0, world_size=1):
 
             # Apply transform
             def transform_fn(examples):
-                # 'examples' is a dict of lists: {'image': [PIL.Image, ...], 'label': [int, ...]}
                 
                 pixel_values = []
                 for image in examples["image"]:
-                    # 1. Convert to RGB to avoid channel errors
                     if image.mode != "RGB":
                         image = image.convert("RGB")
                     
-                    # 2. Apply transforms
-                    # We apply the list manually or use a Compose without the RGB check 
-                    # since we did it above.
                     trans = transforms.Compose(transform_list)
                     pixel_values.append(trans(image))
                 
                 # Return dictionary with transformed tensors
-                # Do NOT torch.stack() here; the DataLoader collate_fn handles stacking.
                 return {"image": pixel_values, "label": examples["label"]}
 
             ds = ds.with_transform(transform_fn)
@@ -246,7 +231,6 @@ def create_dataloader(args, rank=0, world_size=1):
     #     shuffle = False
     # else:
     #     sampler = None
-    #     # Disable DataLoader shuffling if streaming (we did it manually above)
     #     shuffle = False if is_streaming else True
 
     # -----------------------
@@ -273,10 +257,7 @@ def load_config(path: str):
 def load_model_from_checkpoint(ckpt_path: Path, device: str):
     ckpt = torch.load(str(ckpt_path), map_location=device)
 
-    # common formats:
-    # 1) {"model_state_dict": ..., "args": {...}}
-    # 2) {"state_dict": ...}
-    # 3) raw state_dict
+
     if isinstance(ckpt, dict):
         state = ckpt.get("model_state_dict", None)
         if state is None:
@@ -288,10 +269,7 @@ def load_model_from_checkpoint(ckpt_path: Path, device: str):
 
     # Build model config from checkpoint args if present
     model_args = ckpt.get("args", {}) if isinstance(ckpt, dict) else {}
-    # Your training code saved args as vars(args), so keys exist.
 
-    # IMPORTANT: Your TransVAE constructor in training used (config=..., variant=..., etc.)
-    # But many repos allow variant/compression_ratio/latent_dim only. We keep it compatible:
     # print("model args: ", model_args)
     cfg = load_config(model_args['config'])
     model_cfg = cfg.get("model", {})
@@ -306,7 +284,7 @@ def load_model_from_checkpoint(ckpt_path: Path, device: str):
         use_dc_path=model_cfg.get("use_dc_path", True),
     ).to(device)
 
-    # If keys are prefixed with "module." from DDP, strip them
+
     new_state = {}
     for k, v in state.items():
         new_state[k.replace("module.", "")] = v
@@ -351,7 +329,6 @@ def evaluate_one_checkpoint(model, dataloader, metrics, device="cuda", use_amp=F
         else:
             reconstruction, _, _ = model(images)
 
-        # IMPORTANT: in your repo, reconstruction is logits -> convert to image [0,1]
         recon_img = torch.sigmoid(reconstruction)
 
         # --- LPIPS (batched GPU) ---
@@ -359,7 +336,7 @@ def evaluate_one_checkpoint(model, dataloader, metrics, device="cuda", use_amp=F
             # LPIPS wants [-1,1]
             img_orig_norm = images * 2.0 - 1.0
             img_recon_norm = recon_img * 2.0 - 1.0
-            # clamp for safety
+
             img_orig_norm = img_orig_norm.clamp(-1, 1)
             img_recon_norm = img_recon_norm.clamp(-1, 1)
 
@@ -389,8 +366,6 @@ def evaluate_one_checkpoint(model, dataloader, metrics, device="cuda", use_amp=F
                     )
 
         if "fid" in metrics:
-            # FID expects 3-channel images. If your data is RGB, you're good.
-            # It also expects [0,1] floats if normalize=True.
             fid.update(images, real=True)
             fid.update(recon_img, real=False)
 
@@ -429,9 +404,9 @@ def main():
 
         model, missing, unexpected = load_model_from_checkpoint(ckpt_path, device=device)
         if missing:
-            print(f"⚠️ Missing keys (showing up to 10): {missing[:10]}")
+            print(f"Missing keys (showing up to 10): {missing[:10]}")
         if unexpected:
-            print(f"⚠️ Unexpected keys (showing up to 10): {unexpected[:10]}")
+            print(f"Unexpected keys (showing up to 10): {unexpected[:10]}")
 
         results = evaluate_one_checkpoint(
             model=model,
@@ -468,7 +443,7 @@ def main():
     # Print best checkpoint summary (by LPIPS if available else PSNR)
     key_metric = "lpips" if "lpips" in args.metrics else ("psnr" if "psnr" in args.metrics else args.metrics[0])
     reverse = True if key_metric == "lpips" else False  # lpips lower is better -> sort ascending (reverse=False)
-    # Actually: lpips lower is better, so reverse=False; psnr/ssim higher better -> reverse=True
+
     reverse = False if key_metric == "lpips" else True
 
     sorted_res = sorted(all_results, key=lambda x: x["results"][key_metric]["mean"], reverse=reverse)

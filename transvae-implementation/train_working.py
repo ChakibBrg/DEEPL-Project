@@ -1,17 +1,5 @@
 """
-Working training script for this TransVAE repo (OOM-safe + NaN-safe)
-
-Why this version works with YOUR codebase:
-- Your decoder outputs unbounded logits (no sigmoid/tanh). The patched TransVAELoss
-  converts reconstruction -> [0,1] via sigmoid() for L1/LPIPS, preventing LPIPS NaNs.
-- Mixed precision is used for the model forward (bf16 if supported, else fp16),
-  while the loss is computed in FP32 (autocast disabled) for stability.
-- HF streaming dataloader is correctly sharded across DDP ranks AND DataLoader workers,
-  avoiding duplicate samples and odd behavior.
-- Activation memory is reduced with gradient checkpointing + gradient accumulation.
-- No empty_cache() inside the step loop (only between epochs).
-
-Run (single GPU, safe):
+Example command :
 python3 train_working.py --config configs/transvae_base_f16d32.yaml --output_dir out \
   --hf_dataset --streaming --mixed_precision --gradient_checkpointing \
   --batch_size 8 --accumulation_steps 16 --num_workers 2 --num_epochs 5
@@ -70,7 +58,7 @@ def parse_args():
     p.add_argument("--l1_weight", type=float, default=1.0)
     p.add_argument("--lpips_weight", type=float, default=1.0)
     p.add_argument("--kl_weight", type=float, default=1e-8)
-    p.add_argument("--vf_weight", type=float, default=0.0)  # IMPORTANT: keep 0 unless you actually pass dinov2
+    p.add_argument("--vf_weight", type=float, default=0.0)
     p.add_argument("--gan_weight", type=float, default=0.0)
     p.add_argument("--use_gan", action="store_true")
 
@@ -193,12 +181,9 @@ def create_dataloader(args, rank, world_size):
         transforms.Resize(args.resolution),
         transforms.CenterCrop(args.resolution),
         transforms.ToTensor(),
-        # Add Normalization here if needed, e.g.:
         # transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ]
     
-    # We create a specific transform for local files that handles RGB conversion
-    # inside the Compose (ImageFolder usually loads RGB, but to be safe):
     local_transform = transforms.Compose(transform_list)
 
     # -----------------------
@@ -207,31 +192,22 @@ def create_dataloader(args, rank, world_size):
     if args.dataset == "imagenet":
 
         if getattr(args, "hf_dataset", True):
-            # Use HuggingFace dataset
             ds = load_dataset(
                 "evanarlian/imagenet_1k_resized_256",
                 split="train",
                 streaming=getattr(args, "streaming", False)
             )
 
-            # Apply transform
             def transform_fn(examples):
-                # 'examples' is a dict of lists: {'image': [PIL.Image, ...], 'label': [int, ...]}
                 
                 pixel_values = []
                 for image in examples["image"]:
-                    # 1. Convert to RGB to avoid channel errors
                     if image.mode != "RGB":
                         image = image.convert("RGB")
                     
-                    # 2. Apply transforms
-                    # We apply the list manually or use a Compose without the RGB check 
-                    # since we did it above.
                     trans = transforms.Compose(transform_list)
                     pixel_values.append(trans(image))
-                
-                # Return dictionary with transformed tensors
-                # Do NOT torch.stack() here; the DataLoader collate_fn handles stacking.
+
                 return {"image": pixel_values, "label": examples["label"]}
 
             ds = ds.with_transform(transform_fn)
@@ -266,7 +242,6 @@ def create_dataloader(args, rank, world_size):
             # train_dataset = ds
 
         else:
-            # Use local ImageFolder
             from torchvision import datasets
 
             train_dataset = datasets.ImageFolder(
@@ -306,7 +281,7 @@ def create_dataloader(args, rank, world_size):
     # DataLoader
     # -----------------------
     # size = int(len(train_dataset) * 0.7)
-    size = 840000
+    # size = 840000
     dataloader = DataLoader(
         # train_dataset[:size],
         train_dataset,
@@ -365,13 +340,11 @@ def train_epoch(
         # images = images.to(args.device, non_blocking=True)
     for batch_idx, batch in enumerate(pbar):
         
-        # CHANGE 2: Check if batch is a Dict (HuggingFace) or Tuple (ImageFolder)
         if isinstance(batch, dict):
             images = batch["image"]
         else:
             images, _ = batch
 
-        # Now images is a Tensor, so .cuda() (or .to(device)) works
         images = images.cuda(non_blocking=True)
 
         # channels_last can help on Ampere+ for conv-heavy models
@@ -399,7 +372,7 @@ def train_epoch(
         # Detect non-finite and print diagnostics ONCE
         if not torch.isfinite(loss):
             if rank == 0:
-                print("⚠️ Non-finite loss. Diagnostics:")
+                print("Non-finite loss. Diagnostics:")
                 print({k: (v.detach().float().min().item(), v.detach().float().max().item())
                       for k, v in losses.items() if torch.is_tensor(v)})
                 print_tensor_stats(images, "images([0,1])")
@@ -453,7 +426,6 @@ def train_epoch(
 
         del losses, loss
 
-    # flush if epoch ended mid-accumulation
     if (batch_idx + 1) % accum != 0:
         if args.mixed_precision:
             scaler.unscale_(optimizer)
